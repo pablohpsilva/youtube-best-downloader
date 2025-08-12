@@ -29,207 +29,18 @@ Prereqs:
 import argparse
 import os
 import sys
-import re
-import glob
-import subprocess
-from typing import Dict, Any, List, Optional, Tuple
+import time
+from typing import Dict, Any, List, Tuple
 import yt_dlp
 
-
-# ----------------------- helpers -----------------------
-
-def human_size(n: Optional[float]) -> str:
-    if n is None:
-        return "unknown"
-    units = ["B", "KB", "MB", "GB", "TB"]
-    i = 0
-    while n >= 1024 and i < len(units) - 1:
-        n /= 1024
-        i += 1
-    return f"{n:.2f}{units[i]}"
+from helpers import progress_hook, safe_label, parse_splits, chapters_to_cuts
+from url_list import read_urls_from_file, expand_comma_separated
+from vpn import run_shell_command, macos_vpn_connect, macos_vpn_disconnect
+from download_video import build_video_opts
+from download_music import build_music_opts, ffmpeg_split, find_audio_outputs
+from download_subs import build_subs_only_opts
 
 
-def progress_hook(d: Dict[str, Any]):
-    status = d.get("status")
-    if status == "downloading":
-        total = d.get("total_bytes") or d.get("total_bytes_estimate")
-        downloaded = d.get("downloaded_bytes", 0)
-        speed = d.get("speed")
-        eta = d.get("eta")
-        msg = f"[DL] {human_size(downloaded)}/{human_size(total)}"
-        if speed:
-            msg += f" at {human_size(speed)}/s"
-        if eta:
-            msg += f", ETA {eta}s"
-        print(msg, end="\r", flush=True)
-    elif status == "finished":
-        print("\n[DL] Download finished, now post-processing…")
-    elif status == "error":
-        print("\n[ERR] A download error occurred.")
-
-
-def safe_label(s: str) -> str:
-    s = s.strip() or "part"
-    return re.sub(r'[\\/:*?"<>|]+', "_", s)
-
-
-def parse_timecode(s: str) -> float:
-    """Accept HH:MM:SS, MM:SS, or MM (minutes)."""
-    s = s.strip()
-    if not s:
-        raise ValueError("empty timecode")
-    parts = s.split(":")
-    if len(parts) == 3:
-        h, m, sec = parts
-        return int(h) * 3600 + int(m) * 60 + float(sec)
-    if len(parts) == 2:
-        m, sec = parts
-        return int(m) * 60 + float(sec)
-    return float(s) * 60.0  # just minutes
-
-
-def read_split_spec(spec: str) -> str:
-    """Return the raw spec string; if @file, load from file."""
-    spec = spec.strip()
-    if spec.startswith("@"):
-        path = spec[1:]
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read()
-    return spec
-
-
-def parse_splits(spec: str, duration: Optional[float]) -> List[Tuple[float, float, str]]:
-    """
-    Returns list of (start, end, label).
-    Supports:
-      - markers: "0:00,1:23,3:45,5:00"
-      - ranges : "0:00-1:23=Intro,1:23-3:45=Verse,3:45-end=Outro"
-    'end' or blank end means 'until file end' (requires duration).
-    """
-    raw = read_split_spec(spec)
-    tokens = [t.strip() for t in re.split(r"[,\n;]+", raw) if t.strip()]
-    if not tokens:
-        raise ValueError("No split tokens found")
-
-    ranges_mode = any("-" in t for t in tokens)
-    cuts: List[Tuple[float, float, str]] = []
-
-    if ranges_mode:
-        for t in tokens:
-            if "=" in t:
-                range_part, label = t.split("=", 1)
-            else:
-                range_part, label = t, ""
-            if "-" not in range_part:
-                raise ValueError(f"Invalid range: {t}")
-            start_s, end_s = [x.strip() for x in range_part.split("-", 1)]
-            start = parse_timecode(start_s)
-            if end_s.lower() in ("", "end"):
-                if duration is None:
-                    raise ValueError("End not specified and duration unknown; cannot infer end")
-                end = float(duration)
-            else:
-                end = parse_timecode(end_s)
-            if end <= start:
-                raise ValueError(f"End must be > start: {t}")
-            cuts.append((start, end, safe_label(label) if label else ""))
-    else:
-        markers = [parse_timecode(t) for t in tokens]
-        markers = sorted(m for m in markers if m >= 0)
-        if len(markers) < 2:
-            raise ValueError("Need at least two markers to define segments")
-        if duration is None:
-            duration = markers[-1]
-        for i in range(len(markers) - 1):
-            cuts.append((markers[i], markers[i + 1], ""))
-        if markers[-1] < duration:
-            cuts.append((markers[-1], float(duration), ""))
-
-    for idx, (a, b, name) in enumerate(cuts, 1):
-        if not name:
-            cuts[idx - 1] = (a, b, f"part{idx:02d}")
-    return cuts
-
-
-def chapters_to_cuts(info: Dict[str, Any]) -> List[Tuple[float, float, str]]:
-    """
-    Build cuts from yt-dlp's parsed chapters.
-    Each cut is numbered (01, 02, …) and uses the chapter title as the label.
-    """
-    chapters = info.get("chapters") or []
-    if not chapters:
-        return []
-    duration = info.get("duration")
-    cuts: List[Tuple[float, float, str]] = []
-    for i, ch in enumerate(chapters):
-        start = float(ch.get("start_time") or 0.0)
-        # figure out end: chapter's end_time, else next start, else full duration
-        next_start = None
-        if i + 1 < len(chapters):
-            next_start = chapters[i + 1].get("start_time")
-        end = ch.get("end_time") or next_start or duration or start
-        end = float(end)
-        if end <= start:
-            continue
-        title = ch.get("title") or f"part{i+1:02d}"
-        label = f"{i+1:02d} - {safe_label(title)}"
-        cuts.append((start, end, label))
-    return cuts
-
-
-def ffmpeg_split(input_path: str, outdir: str, base_stem: str,
-                 cuts: List[Tuple[float, float, str]]) -> List[str]:
-    """
-    Split input_path into multiple files using ffmpeg, preferring stream copy.
-    Falls back to re-encode if copy fails.
-    """
-    made: List[str] = []
-    for (start, end, label) in cuts:
-        out_path = os.path.join(outdir, f"{base_stem} - {label}.m4a")
-        suffix = 2
-        stem_only = f"{base_stem} - {label}"
-        while os.path.exists(out_path):
-            out_path = os.path.join(outdir, f"{stem_only} ({suffix}).m4a")
-            suffix += 1
-
-        duration = max(0.01, end - start)
-        cmd_copy = [
-            "ffmpeg", "-v", "error", "-nostdin", "-y",
-            "-ss", f"{start}", "-t", f"{duration}",
-            "-i", input_path,
-            "-c", "copy", "-movflags", "+faststart",
-            out_path,
-        ]
-        res = subprocess.run(cmd_copy, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if res.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
-            cmd_re = [
-                "ffmpeg", "-v", "error", "-nostdin", "-y",
-                "-ss", f"{start}", "-t", f"{duration}",
-                "-i", input_path,
-                "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",
-                out_path,
-            ]
-            res2 = subprocess.run(cmd_re, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            if res2.returncode != 0:
-                print(f"[ERR] Failed to create segment {label}", file=sys.stderr)
-                continue
-        made.append(out_path)
-        print(f"[OK] Wrote {out_path}")
-    return made
-
-
-def find_audio_outputs(outdir: str, video_id: str) -> List[str]:
-    """
-    Find audio files produced for a given video ID (pattern matches our outtmpl).
-    Handles literal square brackets around the ID.
-    """
-    exts = ("m4a", "mp3", "opus", "aac", "flac", "wav")
-    id_token = glob.escape(f"[{video_id}]")  # escape [] so glob matches literally
-    matches: List[str] = []
-    for ext in exts:
-        pattern = os.path.join(outdir, f"*{id_token}.{ext}")
-        matches.extend(glob.glob(pattern))
-    return sorted(matches)
 
 
 # ----------------------- yt-dlp option builders -----------------------
@@ -295,61 +106,6 @@ def build_common_opts(args) -> Dict[str, Any]:
     return opts
 
 
-def build_video_opts(args, base_opts: Dict[str, Any]) -> Dict[str, Any]:
-    maxh = args.max_res
-    minh = args.min_res
-    o = dict(base_opts)
-    codec_order = ":".join(args.prefer_codecs.split(","))
-
-    if not args.allow_below_min:
-        fmt = (
-            f"(bv*[height>={minh}][vcodec^=av01]/"
-            f" bv*[height>={minh}][vcodec^=vp9]/"
-            f" bv*[height>={minh}])+(ba[acodec^=opus]/ba)"
-        )
-    else:
-        fmt = (
-            f"(bv*[height<={maxh}][height>={minh}][vcodec^=av01]/"
-            f" bv*[height<={maxh}][height>={minh}][vcodec^=vp9]/"
-            f" bv*[height<={maxh}][height>={minh}]/"
-            f" bv*[height<={maxh}]/ bv*)+(ba[acodec^=opus]/ba)"
-        )
-
-    o.update({
-        "format": fmt,
-        "format_sort": [f"res:{maxh}", "fps", f"codec:{codec_order}", "vbr", "hdr"],
-        "format_sort_force": True,
-        "postprocessor_args": [],
-    })
-    return o
-
-
-def build_music_opts(args, base_opts: Dict[str, Any]) -> Dict[str, Any]:
-    o = dict(base_opts)
-    o.update(
-        {
-            "format": "bestaudio/best",
-            "embedsubtitles": False,
-            "postprocessors": [
-                {
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "m4a",
-                    "preferredquality": "0",
-                },
-                {"key": "FFmpegMetadata"},
-                {"key": "EmbedThumbnail"},
-            ],
-        }
-    )
-    o["writethumbnail"] = True
-    return o
-
-
-def build_subs_only_opts(args, base_opts: Dict[str, Any]) -> Dict[str, Any]:
-    o = dict(base_opts)
-    o.update({"skip_download": True, "embedsubtitles": False})
-    o.pop("postprocessors", None)
-    return o
 
 
 # ----------------------- driver -----------------------
@@ -358,7 +114,11 @@ def parse_args():
     p = argparse.ArgumentParser(
         description="Download best-quality video/music + subtitles from YouTube (via yt-dlp)."
     )
-    p.add_argument("urls", nargs="+", help="YouTube video/playlist URLs")
+    p.add_argument(
+        "urls",
+        nargs="*",
+        help="YouTube video/playlist URLs (supports comma-separated values)",
+    )
     p.add_argument("--outdir", default="downloads", help="Output directory (default: downloads)")
 
     mode = p.add_mutually_exclusive_group()
@@ -408,6 +168,25 @@ def parse_args():
     p.add_argument("--playlist-start", type=int, help="Playlist start index (1-based)")
     p.add_argument("--playlist-end", type=int, help="Playlist end index (inclusive)")
 
+    # URL lists
+    p.add_argument(
+        "--urls-file",
+        dest="urls_files",
+        action="append",
+        help=(
+            "Path to a text file with URLs (one per line, commas allowed per line). "
+            "Can be given multiple times."
+        ),
+    )
+
+    # VPN / command hooks
+    p.add_argument("--pre-cmd", help="Shell command to run before downloads (e.g., start VPN)")
+    p.add_argument("--post-cmd", help="Shell command to run after downloads")
+    p.add_argument("--pre-wait", type=float, default=0.0, help="Seconds to wait after --pre-cmd")
+    p.add_argument("--vpn-service", help="macOS VPN service name to connect via 'scutil --nc'")
+    p.add_argument("--vpn-timeout", type=float, default=60.0, help="Seconds to wait for VPN connect")
+    p.add_argument("--keep-vpn", action="store_true", help="Do not disconnect VPN on exit")
+
     # Splitting
     p.add_argument("--split", help="Split spec (markers or ranges). Use @file to read from file")
     p.add_argument("--split-from-chapters", action="store_true",
@@ -419,6 +198,36 @@ def parse_args():
 def main():
     args = parse_args()
     os.makedirs(args.outdir, exist_ok=True)
+
+    # Run pre-cmd if provided
+    if args.pre_cmd:
+        rc = run_shell_command(args.pre_cmd)
+        if rc != 0:
+            print("[ERR] --pre-cmd failed; aborting.", file=sys.stderr)
+            sys.exit(rc)
+        if args.pre_wait and args.pre_wait > 0:
+            time.sleep(args.pre_wait)
+
+    # Optionally bring up VPN (macOS)
+    vpn_started_here = False
+    if args.vpn_service:
+        ok = macos_vpn_connect(args.vpn_service, args.vpn_timeout)
+        if not ok:
+            sys.exit(4)
+        vpn_started_here = True
+
+    # Build final URL list from CLI and files
+    final_urls: List[str] = []
+    if args.urls:
+        final_urls.extend(expand_comma_separated(args.urls))
+    if getattr(args, "urls_files", None):
+        for path in args.urls_files:
+            final_urls.extend(read_urls_from_file(path))
+    # de-duplicate while preserving order
+    final_urls = list(dict.fromkeys([u for u in final_urls if u and u.strip()]))
+    if not final_urls:
+        print("[ERR] No URLs provided. Pass positional URLs or --urls-file.", file=sys.stderr)
+        sys.exit(1)
 
     base = build_common_opts(args)
 
@@ -439,7 +248,7 @@ def main():
     outputs: List[Dict[str, Any]] = []
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
-            for url in args.urls:
+            for url in final_urls:
                 info = ydl.extract_info(url, download=True)
                 if info is None:
                     continue
@@ -449,51 +258,54 @@ def main():
                             outputs.append(e)
                 else:
                     outputs.append(info)
-    except Exception as e:
-        print(f"[ERR] {e}", file=sys.stderr)
-        sys.exit(2)
 
-    # Post step: split audio (music mode)
-    if args.music:
-        for info in outputs:
-            vid = info.get("id")
-            duration = info.get("duration")
-            if not vid:
-                continue
+        # Post step: split audio (music mode)
+        if args.music:
+            for info in outputs:
+                vid = info.get("id")
+                duration = info.get("duration")
+                if not vid:
+                    continue
 
-            # precedence: manual --split overrides chapters
-            cuts: List[Tuple[float, float, str]] = []
-            if args.split:
-                try:
-                    cuts = parse_splits(args.split, duration)
-                except Exception as e:
-                    print(f"[ERR] Bad --split spec: {e}", file=sys.stderr)
-            elif args.split_from_chapters:
-                cuts = chapters_to_cuts(info)
+                # precedence: manual --split overrides chapters
+                cuts: List[Tuple[float, float, str]] = []
+                if args.split:
+                    try:
+                        cuts = parse_splits(args.split, duration)
+                    except Exception as e:
+                        print(f"[ERR] Bad --split spec: {e}", file=sys.stderr)
+                elif args.split_from_chapters:
+                    cuts = chapters_to_cuts(info)
+                    if not cuts:
+                        print(f"[WARN] No chapters found for [{vid}]; nothing to split.", file=sys.stderr)
+
                 if not cuts:
-                    print(f"[WARN] No chapters found for [{vid}]; nothing to split.", file=sys.stderr)
+                    # nothing to do for this item
+                    continue
 
-            if not cuts:
-                # nothing to do for this item
-                continue
+                candidates = find_audio_outputs(args.outdir, vid)
+                if not candidates:
+                    print(f"[WARN] No audio file found for [{vid}] to split.", file=sys.stderr)
+                    continue
 
-            candidates = find_audio_outputs(args.outdir, vid)
-            if not candidates:
-                print(f"[WARN] No audio file found for [{vid}] to split.", file=sys.stderr)
-                continue
+                input_audio = max(candidates, key=lambda p: os.path.getmtime(p))
+                title = info.get("title") or "track"
+                stem = safe_label(f"{title} [{vid}]")
+                print(f"[INFO] Splitting into {len(cuts)} segment(s)…")
+                made = ffmpeg_split(input_audio, args.outdir, stem, cuts)
+                if made:
+                    print(f"[DONE] Created {len(made)} files.")
+                else:
+                    print(f"[WARN] No segments were created for [{vid}].", file=sys.stderr)
 
-            input_audio = max(candidates, key=lambda p: os.path.getmtime(p))
-            title = info.get("title") or "track"
-            stem = safe_label(f"{title} [{vid}]")
-            print(f"[INFO] Splitting into {len(cuts)} segment(s)…")
-            made = ffmpeg_split(input_audio, args.outdir, stem, cuts)
-            if made:
-                print(f"[DONE] Created {len(made)} files.")
-            else:
-                print(f"[WARN] No segments were created for [{vid}].", file=sys.stderr)
-
-    print("\n✅ Done.")
-    sys.exit(0)
+        print("\n✅ Done.")
+        sys.exit(0)
+    finally:
+        # Always run post-cmd and optionally bring VPN down
+        if args.post_cmd:
+            run_shell_command(args.post_cmd)
+        if args.vpn_service and vpn_started_here and not args.keep_vpn:
+            macos_vpn_disconnect(args.vpn_service)
 
 
 if __name__ == "__main__":

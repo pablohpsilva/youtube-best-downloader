@@ -87,12 +87,19 @@ docker run --rm -v "HOST_DIR:/downloads" yt-best-dl [FLAGS] URL [URL...]
 
 ### Core
 
-- **positional**: one or more YouTube URLs (videos or playlists)
+- **positional**: one or more YouTube URLs (videos or playlists). Supports comma-separated values.
 - **--outdir DIR**: output directory (default: `downloads`)
 - **--video**: force video mode (default if no other mode chosen)
 - **--music**: audio-only export (M4A)
 - **--subs-only**: download only subtitles/captions
 - **--format STR**: custom `yt-dlp` format string (overrides defaults)
+
+### URL lists
+
+- **--urls-file PATH**: path to a text file with URLs. Can be passed multiple times.
+  - Blank lines and lines starting with `#` or `//` are ignored
+  - Comma-separated URLs per line are supported
+  - When using Docker, ensure the file is inside a mounted volume (e.g., `/downloads/urls.txt`)
 
 ### Subtitles
 
@@ -120,6 +127,15 @@ docker run --rm -v "HOST_DIR:/downloads" yt-best-dl [FLAGS] URL [URL...]
 - **--cookies PATH**: Netscape cookies file (age-gate/region)
 - **--proxy URL**: e.g., `socks5://127.0.0.1:1080`
 - **--playlist-start N** / **--playlist-end N**: 1-based inclusive slicing
+
+### VPN / Hooks
+
+- **--pre-cmd "CMD"**: run a shell command before downloads (e.g., start a VPN CLI)
+- **--pre-wait SEC**: sleep this many seconds after `--pre-cmd`
+- **--post-cmd "CMD"**: run a shell command after downloads
+- **--vpn-service NAME**: macOS only. Connect/disconnect VPN service via `scutil --nc`.
+- **--vpn-timeout SEC**: wait for VPN to reach Connected (default: 60)
+- **--keep-vpn**: do not disconnect VPN on exit
 
 ### Splitting (music mode)
 
@@ -182,6 +198,29 @@ docker run --rm -v "$(pwd)/downloads:/downloads" yt-best-dl \
   --music --split-from-chapters \
   https://youtu.be/VIDEO
 
+# Use a URLs file (mounted into the container)
+docker run --rm -v "$(pwd)/downloads:/downloads" yt-best-dl \
+  --outdir /downloads \
+  --urls-file /downloads/urls.txt
+
+# Comma-separated URLs on the CLI
+docker run --rm -v "$(pwd)/downloads:/downloads" yt-best-dl \
+  --outdir /downloads \
+  "https://youtu.be/A1, https://youtu.be/B2" https://youtu.be/C3
+
+# macOS built-in VPN by service name
+docker run --rm -v "$(pwd)/downloads:/downloads" yt-best-dl \
+  --outdir /downloads \
+  --vpn-service "My VPN" --vpn-timeout 45 \
+  https://youtu.be/VIDEO
+
+# Third-party VPN CLI via hooks (example: Mullvad)
+docker run --rm -v "$(pwd)/downloads:/downloads" yt-best-dl \
+  --outdir /downloads \
+  --pre-cmd "mullvad connect" --pre-wait 3 \
+  --post-cmd "mullvad disconnect" \
+  https://youtu.be/VIDEO
+
 # Use cookies and proxy
 docker run --rm -v "$(pwd)/downloads:/downloads" yt-best-dl \
   --outdir /downloads \
@@ -221,9 +260,13 @@ This repo includes a helper `dedupe_downloads.py` script that removes duplicate 
 
 - **0**: success (downloads and any optional splitting finished)
 - **2**: error during extraction or processing
+- **1**: no URLs provided (neither positional nor via `--urls-file`)
+- **3**: URLs file missing/unreadable
+- **4**: VPN failed to reach Connected within timeout
 
 ## Tips
 
 - If you see 403s, try `--player-variant web_embedded` (default) or `--sleep-requests 2.5`.
 - For unstable networks, add `--http-chunk-size 5M` and reduce `--concurrent-fragments`.
 - Region/age-gated content often needs `--cookies`.
+- On macOS, list available VPN services with: `scutil --nc list | cat`
