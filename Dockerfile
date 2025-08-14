@@ -7,7 +7,8 @@ RUN apt-get update && \
 WORKDIR /app
 RUN pip install --no-cache-dir "yt-dlp[default]"
 
-COPY yt_best_downloader.py /app/yt_best_downloader.py
+# include all local python modules used by the entrypoint
+COPY *.py /app/
 
 # bake default outdir so passing a URL doesn’t override it
 ENTRYPOINT ["python", "/app/yt_best_downloader.py", "--outdir", "/downloads"]
