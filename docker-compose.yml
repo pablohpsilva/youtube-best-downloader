@@ -1,0 +1,50 @@
+version: "3.8"
+
+services:
+  youtube-downloader:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: youtube-downloader:latest
+    container_name: yt-best-downloader
+    volumes:
+      # Mount downloads directory to host
+      - ./downloads:/downloads
+      # Optional: Mount cookies file if needed
+      # - ./cookies.txt:/app/cookies.txt:ro
+      # Optional: Mount URL files
+      # - ./urls.txt:/downloads/urls.txt:ro
+    environment:
+      # Optional environment variables
+      - PYTHONUNBUFFERED=1
+    # Override default command if needed
+    # command: ["--music", "--split-from-chapters", "https://youtube.com/watch?v=example"]
+
+    # For development: override entrypoint to keep container running
+    # entrypoint: ["sleep", "infinity"]
+
+    # Resource limits (optional)
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+        reservations:
+          memory: 256M
+          cpus: "0.25"
+
+    # Network mode (optional)
+    # network_mode: host  # Use if you need VPN integration
+
+    # Restart policy
+    restart: "no" # Changed from always since this is a one-off tool
+
+  # Optional: Add a service for batch processing
+  youtube-batch:
+    extends:
+      service: youtube-downloader
+    container_name: yt-batch-downloader
+    command: ["--urls-file", "/downloads/batch_urls.txt", "--music"]
+    volumes:
+      - ./downloads:/downloads
+      - ./batch_urls.txt:/downloads/batch_urls.txt:ro
