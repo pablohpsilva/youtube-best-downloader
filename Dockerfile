@@ -23,20 +23,25 @@ LABEL org.opencontainers.image.revision="${VCS_REF}"
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    XDG_CACHE_HOME=/home/ytdl/.cache \
+    PATH=/usr/bin:$PATH \
+    NODE_PATH=/usr/lib/node_modules
 
 # Install system dependencies in a single layer
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ffmpeg \
         ca-certificates \
-        curl && \
+        curl \
+        nodejs \
+        npm && \
     rm -rf /var/lib/apt/lists/* && \
     apt-get autoremove -y && \
     apt-get clean
 
 # Create non-root user for security
-RUN groupadd -r ytdl && useradd -r -g ytdl -s /bin/false ytdl
+RUN groupadd -r ytdl && useradd -r -g ytdl -m -d /home/ytdl -s /bin/false ytdl
 
 # Set working directory
 WORKDIR /app
@@ -45,12 +50,15 @@ WORKDIR /app
 COPY requirements.txt /app/
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Ensure yt-dlp can find Node.js for JavaScript execution
+RUN which node && node --version
+
 # Copy application code
 COPY *.py /app/
 
-# Create downloads directory and set permissions
-RUN mkdir -p /downloads && \
-    chown -R ytdl:ytdl /app /downloads
+# Create downloads and cache directories and set permissions
+RUN mkdir -p /downloads /home/ytdl/.cache/yt-dlp && \
+    chown -R ytdl:ytdl /app /downloads /home/ytdl
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
