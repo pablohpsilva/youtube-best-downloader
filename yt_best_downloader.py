@@ -54,7 +54,18 @@ def build_common_opts(args) -> Dict[str, Any]:
     sub_langs = ["all"] if args.sub_langs == ["all"] else args.sub_langs
     write_auto = not args.no_auto_subs
 
-    yt_args: Dict[str, Dict[str, List[str]]] = {"youtube": {"player_client": [args.player_variant]}}
+    # Handle auto player variant - try multiple clients for robustness
+    if args.player_variant == "auto":
+        player_clients = ["ios", "android", "mweb", "web_embedded"]
+    else:
+        player_clients = [args.player_variant]
+    
+    yt_args: Dict[str, Dict[str, List[str]]] = {
+        "youtube": {
+            "player_client": player_clients,
+            "skip": ["hls", "dash"] if args.player_variant == "web_safari" else []
+        }
+    }
     if args.enable_missing_pot:
         yt_args["youtube"]["formats"] = ["missing_pot"]
 
@@ -67,7 +78,8 @@ def build_common_opts(args) -> Dict[str, Any]:
         "writeautomaticsub": write_auto,
         "subtitleslangs": sub_langs,
         "subtitlesformat": "best",
-        "quiet": False,
+        "quiet": not args.verbose,
+        "verbose": args.verbose,
         "continuedl": True,
         "retries": 5,
         "ignoreerrors": True,
@@ -75,7 +87,21 @@ def build_common_opts(args) -> Dict[str, Any]:
         "overwrites": False,
         "clean_infojson": True,
         "sleep_interval_requests": args.sleep_requests,
+        "sleep_interval": args.sleep_requests,
+        "sleep_interval_subtitles": max(args.sleep_requests * 2, 5.0),
         "extractor_args": yt_args,
+        # Additional anti-rate-limiting measures
+        "fragment_retries": 10,
+        "skip_unavailable_fragments": True,
+        # Better error handling for signature/n-challenge issues
+        "hls_prefer_native": True,
+        "allow_m3u8_native": True,
+        # More aggressive format fallbacks
+        "ignore_no_formats_error": False,
+        "format_sort": ["quality", "res", "fps", "proto:m3u8_native", "proto:http", "codec:h264"],
+        # JavaScript runtime detection
+        "check_formats": "selected",
+        "prefer_free_formats": False,
     }
 
     if args.http_chunk_size:
@@ -143,23 +169,25 @@ def parse_args():
 
     # Quality knobs
     p.add_argument("--max-res", type=int, default=2160, help="Max video height (default: 2160)")
-    p.add_argument("--min-res", type=int, default=1080, help="Minimum video height (default: 1080)")
-    p.add_argument("--allow-below-min", action="store_true",
-                   help="Allow fallback below --min-res instead of erroring")
+    p.add_argument("--min-res", type=int, default=360, help="Minimum video height (default: 360)")
+    p.add_argument("--allow-below-min", action="store_true", default=True,
+                   help="Allow fallback below --min-res instead of erroring (default: True)")
+    p.add_argument("--quality-preset", choices=["best", "hd", "sd", "low"],
+                   help="Quality preset: best(1080p+), hd(720p+), sd(480p+), low(360p+)")
     p.add_argument("--prefer-codecs", default="av01,vp9,h264",
                    help="Codec priority, comma-separated (default: av01,vp9,h264)")
 
     # Stability/perf knobs
     p.add_argument("--player-variant",
-                   choices=["web", "web_embedded", "web_safari", "ios", "android", "tv"],
-                   default="web_embedded",
-                   help="Specific YouTube player variant (default: web_embedded)")
+                   choices=["web", "web_embedded", "web_safari", "ios", "android", "tv", "mweb", "auto"],
+                   default="auto",
+                   help="Specific YouTube player variant (default: auto)")
     p.add_argument("--enable-missing-pot", action="store_true",
                    help="Enable formats that usually require a PO token (may 403)")
-    p.add_argument("--sleep-requests", dest="sleep_requests", type=float, default=2.0,
-                   help="Seconds to sleep between HTTP requests (default: 2.0)")
-    p.add_argument("--concurrent-fragments", type=int, default=4,
-                   help="Number of HLS/DASH fragments to fetch in parallel (default: 4)")
+    p.add_argument("--sleep-requests", dest="sleep_requests", type=float, default=5.0,
+                   help="Seconds to sleep between HTTP requests (default: 5.0)")
+    p.add_argument("--concurrent-fragments", type=int, default=2,
+                   help="Number of HLS/DASH fragments to fetch in parallel (default: 2)")
     p.add_argument("--http-chunk-size", help="Max size per HTTP chunk, e.g., 5M or 5242880 bytes")
 
     # Misc
@@ -167,6 +195,8 @@ def parse_args():
     p.add_argument("--proxy", help="Proxy, e.g., socks5://127.0.0.1:1080")
     p.add_argument("--playlist-start", type=int, help="Playlist start index (1-based)")
     p.add_argument("--playlist-end", type=int, help="Playlist end index (inclusive)")
+    p.add_argument("--list-formats", action="store_true", help="List available formats and exit")
+    p.add_argument("--verbose", action="store_true", help="Enable verbose logging for debugging")
 
     # URL lists
     p.add_argument(
@@ -197,6 +227,24 @@ def parse_args():
 
 def main():
     args = parse_args()
+    
+    # Handle quality presets
+    if args.quality_preset:
+        if args.quality_preset == "best":
+            args.min_res = 1080
+            args.max_res = 2160
+        elif args.quality_preset == "hd":
+            args.min_res = 720
+            args.max_res = 2160
+        elif args.quality_preset == "sd":
+            args.min_res = 480
+            args.max_res = 1080
+        elif args.quality_preset == "low":
+            args.min_res = 360
+            args.max_res = 720
+        
+        print(f"[INFO] Using quality preset '{args.quality_preset}': {args.min_res}p-{args.max_res}p")
+    
     os.makedirs(args.outdir, exist_ok=True)
 
     # Run pre-cmd if provided
@@ -243,6 +291,20 @@ def main():
             opts = o
         else:
             opts = build_video_opts(args, base)
+
+    # Handle format listing
+    if args.list_formats:
+        list_opts = dict(opts)
+        list_opts["listformats"] = True
+        try:
+            with yt_dlp.YoutubeDL(list_opts) as ydl:
+                for url in final_urls:
+                    print(f"\n=== Available formats for {url} ===")
+                    ydl.extract_info(url, download=False)
+            sys.exit(0)
+        except Exception as e:
+            print(f"[ERR] Failed to list formats: {e}", file=sys.stderr)
+            sys.exit(2)
 
     # Use extract_info so we can capture ids/durations and later locate files
     outputs: List[Dict[str, Any]] = []

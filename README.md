@@ -270,3 +270,79 @@ This repo includes a helper `dedupe_downloads.py` script that removes duplicate 
 - For unstable networks, add `--http-chunk-size 5M` and reduce `--concurrent-fragments`.
 - Region/age-gated content often needs `--cookies`.
 - On macOS, list available VPN services with: `scutil --nc list | cat`
+
+## Docker Publishing and Versioning
+
+### Building for Production
+
+The project includes a production-ready Dockerfile with proper versioning, security, and optimization features:
+
+```bash
+# Build with version tag
+./build.sh 1.0.0
+
+# Build and push to Docker registry
+./build.sh 1.0.0 docker.io/yourusername
+
+# Or build manually
+docker build -t youtube-downloader:1.0.0 .
+```
+
+### Using Docker Compose
+
+For easier development and usage:
+
+```bash
+# Start with docker-compose
+docker-compose up youtube-downloader
+
+# Override command for specific use case
+docker-compose run youtube-downloader --music --split-from-chapters https://youtu.be/VIDEO
+
+# Batch processing
+echo "https://youtu.be/VIDEO1" > batch_urls.txt
+echo "https://youtu.be/VIDEO2" >> batch_urls.txt
+docker-compose up youtube-batch
+```
+
+### Registry Publishing
+
+To publish to Docker Hub or other registries:
+
+1. **Docker Hub:**
+
+   ```bash
+   docker login
+   ./build.sh 1.0.0 yourusername
+   ```
+
+2. **GitHub Container Registry:**
+
+   ```bash
+   echo $GITHUB_TOKEN | docker login ghcr.io -u yourusername --password-stdin
+   ./build.sh 1.0.0 ghcr.io/yourusername
+   ```
+
+3. **AWS ECR:**
+   ```bash
+   aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 123456789012.dkr.ecr.us-east-1.amazonaws.com
+   ./build.sh 1.0.0 123456789012.dkr.ecr.us-east-1.amazonaws.com
+   ```
+
+### Image Features
+
+The production Docker image includes:
+
+- **Security**: Non-root user execution
+- **Optimization**: Multi-layer caching and minimal image size
+- **Monitoring**: Health checks and proper logging
+- **Metadata**: Full OCI labels for registry compatibility
+- **Versioning**: Semantic version tags and latest alias
+- **Dependencies**: All required tools (ffmpeg, yt-dlp) pre-installed
+
+### Version Management
+
+- Use semantic versioning (MAJOR.MINOR.PATCH)
+- Tag images with both specific version and `latest`
+- Update version in `build.sh` and Dockerfile labels
+- Create GitHub releases for version tracking
