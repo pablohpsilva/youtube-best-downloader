@@ -33,21 +33,27 @@ def build_opts(args) -> Dict[str, Any]:
     opts = {
         "outtmpl": outtmpl,
         "progress_hooks": [progress_hook],
-        "writesubtitles": True,
-        "writeautomaticsub": True,
-        "subtitleslangs": ["en"],
         "writethumbnail": True,
         "sleep_interval_requests": args.sleep,
         "concurrent_fragments": args.fragments,
+        "ignoreerrors": True,  # Don't let subtitle failures kill the download
     }
+    
+    # Subtitle options - only if not disabled
+    if not args.no_subs:
+        opts.update({
+            "writesubtitles": True,
+            "writeautomaticsub": True,
+            "subtitleslangs": ["en"],
+        })
     
     # Quality selection - prioritize resolution over stability
     if args.quality == "best":
         opts["format"] = "bestvideo[height>=1080]+bestaudio/best[height>=1080]/bestvideo[height>=720]+bestaudio/best[height>=720]/best"
     elif args.quality == "hd":
-        opts["format"] = "best[height>=720]/best"  
+        opts["format"] = "bestvideo[height>=720]+bestaudio/best[height>=720]/best"  
     elif args.quality == "sd":
-        opts["format"] = "best[height>=480]/best"
+        opts["format"] = "bestvideo[height>=480]+bestaudio/best[height>=480]/best"
     elif args.quality == "audio":
         opts["format"] = "bestaudio/best"
         opts["postprocessors"] = [{
@@ -57,6 +63,10 @@ def build_opts(args) -> Dict[str, Any]:
         }]
     else:  # any
         opts["format"] = "best"
+    
+    # Set container format for video (not audio-only)
+    if args.quality != "audio":
+        opts["merge_output_format"] = args.format
     
     # Player variant
     if args.player != "default":
@@ -74,10 +84,13 @@ def main():
     parser.add_argument("--outdir", default="downloads", help="Output directory")
     parser.add_argument("--quality", choices=["best", "hd", "sd", "any", "audio"], 
                        default="best", help="Quality preset")
+    parser.add_argument("--format", choices=["mp4", "mkv", "webm"], 
+                       default="mp4", help="Output container format (default: mp4)")
     parser.add_argument("--player", choices=["default", "web", "tv", "ios", "android"],
                        default="default", help="Player variant") 
     parser.add_argument("--sleep", type=float, default=2.0, help="Sleep between requests")
     parser.add_argument("--fragments", type=int, default=1, help="Concurrent fragments")
+    parser.add_argument("--no-subs", action="store_true", help="Skip subtitle downloads (fixes rate limiting)")
     parser.add_argument("--list-formats", action="store_true", help="List available formats")
     
     args = parser.parse_args()
