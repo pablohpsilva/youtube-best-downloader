@@ -23,15 +23,18 @@ docker run --rm -v "$(pwd)/downloads:/downloads" yt-clean:latest \
 Download **high-quality audio**:
 
 ```
+docker build -t yt-best-dl:latest .
+
 docker run --rm -v "$(pwd)/downloads:/downloads" yt-clean:latest \
   --quality audio \
+  --split-from-chapters \
   'https://www.youtube.com/watch?v=YOUTUBE_ID'
 ```
 
 ### Features ✅
 
 - **📺 Video**: **PROVEN 1080p+ downloads** - clean format selection that actually works
-- **🎵 Audio**: High-quality audio extraction to M4A 
+- **🎵 Audio**: High-quality audio extraction to M4A
 - **📄 Subtitles**: Automatic subtitle download in multiple languages
 - **🎯 Quality Presets**: `best` (1080p+), `hd` (720p+), `sd` (480p+), `audio` (audio-only)
 - **🛡️ Stability**: Conservative defaults that don't interfere with yt-dlp's logic
@@ -39,10 +42,10 @@ docker run --rm -v "$(pwd)/downloads:/downloads" yt-clean:latest \
 
 ### 🆚 Clean vs Complex Approach
 
-| Approach | Result | File Size | Status |
-|----------|--------|-----------|--------|
-| **Clean (Recommended)** | **1080p** | **295MB** | ✅ **Works!** |
-| Complex (Avoid) | 360p | 67MB | ❌ Poor quality |
+| Approach                | Result    | File Size | Status          |
+| ----------------------- | --------- | --------- | --------------- |
+| **Clean (Recommended)** | **1080p** | **295MB** | ✅ **Works!**   |
+| Complex (Avoid)         | 360p      | 67MB      | ❌ Poor quality |
 
 **Key Lesson**: Over-engineering hurts quality. Simple configurations let yt-dlp do its job properly.
 
@@ -71,7 +74,7 @@ docker run --rm -v "$(pwd)/downloads:/downloads" yt-clean:latest \
   --quality audio \
   https://www.youtube.com/watch?v=YOUTUBE_ID
 
-# 📺 HD Quality (720p minimum)  
+# 📺 HD Quality (720p minimum)
 docker run --rm -v "$(pwd)/downloads:/downloads" yt-clean:latest \
   --quality hd \
   https://www.youtube.com/watch?v=YOUTUBE_ID
@@ -95,7 +98,7 @@ docker run --rm -v "HOST_DIR:/downloads" yt-clean:latest [FLAGS] URL [URL...]
 - **positional**: YouTube URL(s) - the video you want to download
 - **--quality {best,hd,sd,audio}**: Quality preset (**RECOMMENDED over complex options**)
   - `best`: 1080p+ video (default, **proven to work**)
-  - `hd`: 720p+ video  
+  - `hd`: 720p+ video
   - `sd`: 480p+ video
   - `audio`: High-quality audio only
 - **--player {default,tv,ios,android}**: Player variant (try `tv` if issues)
@@ -186,7 +189,7 @@ docker run --rm -v "$(pwd)/downloads:/downloads" yt-clean:latest \
 ### 🛠️ **If You Hit Issues**
 
 ```bash
-# Try TV player variant (often bypasses restrictions)  
+# Try TV player variant (often bypasses restrictions)
 docker run --rm -v "$(pwd)/downloads:/downloads" yt-clean:latest \
   --quality best --player tv \
   https://youtu.be/VIDEO
@@ -209,7 +212,7 @@ docker run --rm -v "$(pwd)/downloads:/downloads" yt-clean:latest \
 ./test_comparison.sh
 
 # Expected result:
-# ✅ Clean Version:   295M  (1080p) 
+# ✅ Clean Version:   295M  (1080p)
 # ❌ Complex Version: 67M   (360p)
 ```
 
@@ -246,20 +249,24 @@ This repo includes a helper `dedupe_downloads.py` script that removes duplicate 
 ## Tips 💡
 
 ### ✅ **For Best Results**
+
 - **Start simple**: Use `--quality best` - it's proven to download 1080p+
 - **Trust the defaults**: Don't over-configure, let yt-dlp do its job
 - **Check formats first**: Use `--list-formats` to see what's available
 
 ### 🔧 **If You Hit Issues**
+
 - **Rate limiting**: Try `--player tv` or increase `--sleep 5`
 - **Network issues**: Use `--fragments 1` for more stability
 - **Restricted content**: Some videos may need different player variants
 
 ### 📊 **Quality Verification**
+
 - **File size matters**: 1080p videos should be 200MB+ (vs 67MB for 360p)
 - **Run comparison**: Use `./test_comparison.sh` to verify your setup works
 
 ### 🚨 **What NOT To Do**
+
 - **Avoid complex format strings** - they often reduce quality
 - **Don't over-engineer** - simple configurations work better
 - **Don't use too many options** - they can conflict with each other
@@ -267,23 +274,29 @@ This repo includes a helper `dedupe_downloads.py` script that removes duplicate 
 ## 🔬 **The Breakthrough Discovery**
 
 ### **Problem**: Quality Was Getting Worse With Each "Improvement"
+
 We started with a complex yt-dlp wrapper that had many sophisticated features:
-- Complex format selection strings with multiple fallbacks  
+
+- Complex format selection strings with multiple fallbacks
 - Advanced codec preferences and sorting options
 - Multiple conflicting configuration parameters
 - **Result**: Only 360p videos downloaded (67MB files) 😞
 
-### **Solution**: Strip Back to Basics 
+### **Solution**: Strip Back to Basics
+
 After extensive testing, we discovered that **less complexity = better quality**:
+
 - Simple format selection: `bestvideo[height>=1080]+bestaudio/best[height>=720]/best`
 - Minimal configuration that doesn't interfere with yt-dlp's logic
 - Trust yt-dlp's built-in intelligence instead of overriding it
 - **Result**: Full 1080p videos downloaded (295MB files) 🎉
 
 ### **The Lesson**: Don't Fight The Tool
+
 yt-dlp is incredibly sophisticated. Our "improvements" were actually **interfering** with its ability to:
+
 - Properly negotiate with YouTube's API
-- Select the best available formats  
+- Select the best available formats
 - Handle signature solving and authentication
 - Apply its built-in fallback logic
 
@@ -291,10 +304,10 @@ yt-dlp is incredibly sophisticated. Our "improvements" were actually **interferi
 
 ### **Verified Results**
 
-| Approach | Configuration | Quality | File Size | Formats Available |
-|----------|--------------|---------|-----------|-------------------|  
+| Approach     | Configuration   | Quality   | File Size | Formats Available   |
+| ------------ | --------------- | --------- | --------- | ------------------- |
 | **Clean** ✅ | Simple, minimal | **1080p** | **295MB** | **Many HD formats** |
-| Complex ❌ | Over-engineered | 360p | 67MB | Only low-quality |
+| Complex ❌   | Over-engineered | 360p      | 67MB      | Only low-quality    |
 
 Run `./test_comparison.sh` to verify this yourself!
 
@@ -321,7 +334,7 @@ docker push docker.io/yourusername/yt-clean:latest
 Update your `docker-compose.yml` to use the clean version:
 
 ```yaml
-version: '3.8'
+version: "3.8"
 services:
   youtube-downloader:
     build:
@@ -334,11 +347,12 @@ services:
 ```
 
 Usage:
+
 ```bash
 # High quality video download
 docker-compose run youtube-downloader --quality best https://youtu.be/VIDEO
 
-# Audio only  
+# Audio only
 docker-compose run youtube-downloader --quality audio https://youtu.be/VIDEO
 ```
 
